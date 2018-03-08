@@ -1,0 +1,434 @@
+<?xml version="1.0" encoding="utf-8"?>
+<cruise xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="cruise-config.xsd" schemaVersion="104">
+  <server artifactsdir="artifacts" agentAutoRegisterKey="07b00296-c149-4ee5-a829-1d8819d7c01d" webhookSecret="df9672a6-bb4f-4dc8-ae93-0dd60dedfd28" commandRepositoryLocation="default" serverId="" tokenGenerationKey="8722b08b-211c-4ba2-aea5-7d2f06ea1106" />
+  <pipelines group="Spike-Java">
+    <pipeline name="Build">
+      <materials>
+        <git url="https://github.com/kashishm/spike" shallowClone="true" />
+      </materials>
+      <stage name="build">
+        <jobs>
+          <job name="build">
+            <tasks>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas project -p "spike_build_$GO_PIPELINE_COUNTER"</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas note -p "spike_build_$GO_PIPELINE_COUNTER" -n $GO_PIPELINE_COUNTER -k "BUILD_DETAILS"</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence build -p "spike_build_$GO_PIPELINE_COUNTER" -o "build$GO_PIPELINE_COUNTER" -n "projects/spike_build_$GO_PIPELINE_COUNTER/notes/$GO_PIPELINE_COUNTER" -b $GO_PIPELINE_COUNTER -e "spike.jar" -a $(echo file://sha256:`openssl sha256 build/libs/spike.jar | cut -d ' ' -f2`:spike.jar) -c "$GO_TRIGGER_USER"</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="./gradlew">
+                <arg>clean</arg>
+                <arg>build</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>mv build/libs/spike*.jar build/libs/spike.jar</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>echo file://sha256:`openssl sha256 build/libs/spike.jar | cut -d " " -f2`:spike.jar &gt; build/libs/resource.txt</arg>
+                <runif status="passed" />
+              </exec>
+            </tasks>
+            <artifacts>
+              <artifact src="build/libs/resource.txt" />
+              <artifact src="build/libs/spike.jar" />
+            </artifacts>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+    <pipeline name="Scan">
+      <materials>
+        <pipeline pipelineName="Build" stageName="build" />
+      </materials>
+      <stage name="scan">
+        <approval type="manual" />
+        <jobs>
+          <job name="scan">
+            <tasks>
+              <fetchartifact srcfile="spike.jar" pipeline="Build" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas project -p scanner</arg>
+                <runif status="passed" />
+              </exec>
+              <fetchartifact srcfile="resource.txt" pipeline="Build" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>/var/lib/dependency-check/bin/dependency-check.sh Core -s spike.jar --project spike --format JSON --failOnCVSS 5</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence vulnerability -p "spike_build_$GO_DEPENDENCY_LABEL_BUILD" -a $(cat resource.txt) -s scanner -j dependency-check-report.json</arg>
+                <runif status="any" />
+              </exec>
+            </tasks>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+    <pipeline name="Attest">
+      <materials>
+        <pipeline pipelineName="Build" stageName="build" />
+      </materials>
+      <stage name="sign">
+        <approval type="manual" />
+        <jobs>
+          <job name="sign">
+            <tasks>
+              <fetchartifact srcfile="resource.txt" pipeline="Build" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>gpg --sign --armor --output=signature.gpg --yes -u B943544E resource.txt</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas authority -n "QA" -k "B943544E" | echo</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence attestation -p "spike_build_$GO_DEPENDENCY_LABEL_BUILD" -o "QA Attestation" -n "QA" -a $(cat resource.txt) -k "B943544E" -s signature.gpg</arg>
+                <runif status="passed" />
+              </exec>
+            </tasks>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+    <pipeline name="Deploy">
+      <materials>
+        <pipeline pipelineName="Build" stageName="build" />
+      </materials>
+      <stage name="deploy">
+        <approval type="manual" />
+        <jobs>
+          <job name="deploy">
+            <tasks>
+              <fetchartifact srcfile="resource.txt" pipeline="Build" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence -i -p "spike_build_$GO_DEPENDENCY_LABEL_BUILD" -a $(cat resource.txt)</arg>
+                <runif status="any" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence attestation -p "spike_build_$GO_DEPENDENCY_LABEL_BUILD" -o "QA Attestation" -a $(cat resource.txt) -v</arg>
+                <runif status="any" />
+              </exec>
+            </tasks>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+  </pipelines>
+  <pipelines group="Spike-Python">
+    <pipeline name="BuildPython">
+      <materials>
+        <git url="https://github.com/kashishm/python" shallowClone="true" />
+      </materials>
+      <stage name="build">
+        <jobs>
+          <job name="build">
+            <tasks>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas project -p "spike_python_build_$GO_PIPELINE_COUNTER"</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas note -p "spike_python_build_$GO_PIPELINE_COUNTER" -n $GO_PIPELINE_COUNTER -k "BUILD_DETAILS"</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence build -p "spike_python_build_$GO_PIPELINE_COUNTER" -o "build$GO_PIPELINE_COUNTER" -n "projects/spike_python_build_$GO_PIPELINE_COUNTER/notes/$GO_PIPELINE_COUNTER" -b $GO_PIPELINE_COUNTER -e "spike.jar" -a $(echo file://sha256:`openssl sha256 build/libs/spike.jar | cut -d ' ' -f2`:spike.jar) -c "$GO_TRIGGER_USER"</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="zip">
+                <arg>spike_python.zip</arg>
+                <arg>app.py</arg>
+                <arg>requirements.txt</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>echo file://sha256:`openssl sha256 spike_python.zip | cut -d " " -f2`:spike_python.zip &gt; resource.txt</arg>
+                <runif status="passed" />
+              </exec>
+            </tasks>
+            <artifacts>
+              <artifact src="resource.txt" />
+              <artifact src="spike_python.zip" />
+            </artifacts>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+    <pipeline name="ScanPython">
+      <materials>
+        <pipeline pipelineName="BuildPython" stageName="build" />
+      </materials>
+      <stage name="scan">
+        <approval type="manual" />
+        <jobs>
+          <job name="scan">
+            <tasks>
+              <fetchartifact srcfile="spike_python.zip" pipeline="BuildPython" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas project -p scanner</arg>
+                <runif status="passed" />
+              </exec>
+              <fetchartifact srcfile="resource.txt" pipeline="BuildPython" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>unzip -o spike_python.zip &amp;&amp; safety check -r requirements.txt --json &gt; v.json</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence vulnerability -p "spike_python_build_$GO_DEPENDENCY_LABEL_BUILDPYTHON" -a $(cat resource.txt) -s scanner -j v.json --python</arg>
+                <runif status="any" />
+              </exec>
+            </tasks>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+    <pipeline name="AttestPython">
+      <materials>
+        <pipeline pipelineName="BuildPython" stageName="build" />
+      </materials>
+      <stage name="sign">
+        <approval type="manual" />
+        <jobs>
+          <job name="sign">
+            <tasks>
+              <fetchartifact srcfile="resource.txt" pipeline="BuildPython" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>gpg --sign --armor --output=signature.gpg --yes -u B943544E resource.txt</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas authority -n "QA" -k "B943544E" | echo</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence attestation -p "spike_python_build_$GO_DEPENDENCY_LABEL_BUILDPYTHON" -o "QA Attestation" -n "QA" -a $(cat resource.txt) -k "B943544E" -s signature.gpg</arg>
+                <runif status="passed" />
+              </exec>
+            </tasks>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+    <pipeline name="DeployPython">
+      <materials>
+        <pipeline pipelineName="BuildPython" stageName="build" />
+      </materials>
+      <stage name="deploy">
+        <approval type="manual" />
+        <jobs>
+          <job name="deploy">
+            <tasks>
+              <fetchartifact srcfile="resource.txt" pipeline="BuildPython" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence -i -p "spike_python_build_$GO_DEPENDENCY_LABEL_BUILDPYTHON" -a $(cat resource.txt)</arg>
+                <runif status="any" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence attestation -p "spike_python_build_$GO_DEPENDENCY_LABEL_BUILDPYTHON" -o "QA Attestation" -a $(cat resource.txt) -v</arg>
+                <runif status="any" />
+              </exec>
+            </tasks>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+  </pipelines>
+  <pipelines group="Spike-Docker">
+    <pipeline name="DockerBuild">
+      <materials>
+        <git url="https://github.com/kashishm/docker" shallowClone="true" />
+      </materials>
+      <stage name="build">
+        <jobs>
+          <job name="build">
+            <tasks>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas project -p "spike_docker_build_$GO_PIPELINE_COUNTER"</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas note -p "spike_docker_build_$GO_PIPELINE_COUNTER" -n $GO_PIPELINE_COUNTER -k "BUILD_DETAILS"</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence build -p "spike_docker_build_$GO_PIPELINE_COUNTER" -o "build$GO_PIPELINE_COUNTER" -n "projects/spike_docker_build_$GO_PIPELINE_COUNTER/notes/$GO_PIPELINE_COUNTER" -b $GO_PIPELINE_COUNTER -e "spike_docker_image" -a $(echo https://spike.io/spike@`docker image inspect --format='{{.Id}}' spike`) -c "$GO_TRIGGER_USER"</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>docker rmi spike | echo</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="docker">
+                <arg>build</arg>
+                <arg>-t</arg>
+                <arg>spike</arg>
+                <arg>.</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>echo https://spike.io/name@`docker image inspect --format='{{.Id}}' spike` &gt; resource.txt</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence image -p "spike_docker_build_$GO_PIPELINE_COUNTER" -n spike -b debian -a `cat resource.txt`</arg>
+                <runif status="passed" />
+              </exec>
+            </tasks>
+            <artifacts>
+              <artifact src="resource.txt" />
+              <artifact src="v.json" />
+            </artifacts>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+    <pipeline name="DockerScan">
+      <materials>
+        <pipeline pipelineName="DockerBuild" stageName="build" />
+      </materials>
+      <stage name="scan">
+        <approval type="manual" />
+        <jobs>
+          <job name="scan">
+            <tasks>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas project -p scanner</arg>
+                <runif status="passed" />
+              </exec>
+              <fetchartifact srcfile="resource.txt" pipeline="DockerBuild" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <fetchartifact srcfile="v.json" pipeline="DockerBuild" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence vulnerability -p "spike_docker_build_$GO_DEPENDENCY_LABEL_DOCKERBUILD" -a $(cat resource.txt) -s scanner -j v.json --image &amp;&amp; exit 1</arg>
+                <runif status="any" />
+              </exec>
+            </tasks>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+    <pipeline name="DockerAttest">
+      <materials>
+        <pipeline pipelineName="DockerBuild" stageName="build" />
+      </materials>
+      <stage name="sign">
+        <approval type="manual" />
+        <jobs>
+          <job name="sign">
+            <tasks>
+              <fetchartifact srcfile="resource.txt" pipeline="DockerBuild" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>gpg --sign --armor --output=signature.gpg --yes -u B943544E resource.txt</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas authority -n "QA" -k "B943544E" | echo</arg>
+                <runif status="passed" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence attestation -p "spike_docker_build_$GO_DEPENDENCY_LABEL_DOCKERBUILD" -o "QA Attestation" -n "QA" -a $(cat resource.txt) -k "B943544E" -s signature.gpg</arg>
+                <runif status="passed" />
+              </exec>
+            </tasks>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+    <pipeline name="DockerDeploy">
+      <materials>
+        <pipeline pipelineName="DockerBuild" stageName="build" />
+      </materials>
+      <stage name="deploy">
+        <approval type="manual" />
+        <jobs>
+          <job name="deploy">
+            <tasks>
+              <fetchartifact srcfile="resource.txt" pipeline="DockerBuild" stage="build" job="build">
+                <runif status="passed" />
+              </fetchartifact>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence -i -p "spike_docker_build_$GO_DEPENDENCY_LABEL_DOCKERBUILD" -a $(cat resource.txt)</arg>
+                <runif status="any" />
+              </exec>
+              <exec command="/bin/sh">
+                <arg>-c</arg>
+                <arg>grafeas occurrence attestation -p "spike_docker_build_$GO_DEPENDENCY_LABEL_DOCKERBUILD" -o "QA Attestation" -a $(cat resource.txt) -v</arg>
+                <runif status="any" />
+              </exec>
+            </tasks>
+          </job>
+        </jobs>
+      </stage>
+    </pipeline>
+  </pipelines>
+  <agents>
+    <agent hostname="7fa69f2ff729" ipaddress="127.0.0.1" uuid="c96adc5e-bc8c-4d1f-8ee7-a4f2ea7e58aa" />
+  </agents>
+</cruise>
